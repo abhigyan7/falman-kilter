@@ -11,6 +11,7 @@ GRAY = (100, 100, 100)
 RED = (225, 0, 0)
 BLUE = (0, 0, 225)
 GREEN = (0, 225, 0)
+RND = (255, 225, 0)
 
 
 dt = 0.1
@@ -18,10 +19,10 @@ dt = 0.1
 x = 300
 y = 300
 theta = 0.3
-v = 1
+v = 0.2
 to_loop = True
-random_scale = 0.7
-DEQUE_MAXLEN = 100
+random_scale = 0.1
+DEQUE_MAXLEN = 200
 
 
 class TwoDRandomWalkSimulation(object):
@@ -39,11 +40,11 @@ class TwoDRandomWalkSimulation(object):
 
         self.positions = deque([], maxlen=DEQUE_MAXLEN)
         self.sensor_xs = deque([], maxlen=DEQUE_MAXLEN)
-        self.estimated_xs = deque([], maxlen=DEQUE_MAXLEN)
+        self.updated_xs = deque([], maxlen=DEQUE_MAXLEN)
         self.predicted_xs = deque([], maxlen=DEQUE_MAXLEN)
 
         self.sensor_ys = deque([], maxlen=DEQUE_MAXLEN)
-        self.estimated_ys = deque([], maxlen=DEQUE_MAXLEN)
+        self.updated_ys = deque([], maxlen=DEQUE_MAXLEN)
         self.predicted_ys = deque([], maxlen=DEQUE_MAXLEN)
         self.theta = 0.0
 
@@ -81,20 +82,8 @@ class TwoDRandomWalkSimulation(object):
 
             draw_trail(self.game_display, self.xs, self.ys, RED)
             draw_trail(self.game_display, self.sensor_xs, self.sensor_ys, GREEN, 10)
-            draw_trail(
-                self.game_display, self.estimated_xs, self.estimated_ys, BLUE, 10
-            )
-            # draw_trail(
-            #     self.game_display, self.predicted_xs, self.predicted_ys, GREEN, 10
-            # )
-            # _color = list(RED)
-            # factor = 1 / DEQUE_MAXLEN
-            # for _x, _y in zip(reversed(self.xs), reversed(self.ys)):
-            #    _color[0] = int(RED[0] * (1 - factor) + GRAY[0] * factor)
-            #    _color[1] = int(RED[1] * (1 - factor) + GRAY[1] * factor)
-            #    _color[2] = int(RED[2] * (1 - factor) + GRAY[2] * factor)
-            #    factor += 1 / DEQUE_MAXLEN
-            #    pygame.draw.circle(self.game_display, tuple(_color), (_x, _y), 2)
+            draw_trail(self.game_display, self.updated_xs, self.updated_ys, BLUE, 10)
+            draw_trail(self.game_display, self.predicted_xs, self.predicted_ys, RND, 10)
 
             pygame.display.update()
             self.clock.tick(dt * 1000)
@@ -120,23 +109,47 @@ class TwoDRandomWalkSimulation(object):
         self.predicted_ys.append(prediction[:, 1])
         return
 
-    def add_estimate(self, estimate):
-        self.estimated_xs.append(estimate[:, 0])
-        self.estimated_ys.append(estimate[:, 1])
+    def add_update(self, update):
+        self.updated_xs.append(update[:, 0])
+        self.updated_ys.append(update[:, 1])
         return
 
 
 class TwoDSecondOrderKalmanFilter(object):
     def __init__(self):
-        self.xy = np.zeros((2)) + 300
-        pass
+        self.xy = np.zeros((6)) + 0.000001
+        self.covar = np.eye(6) * 100
+        self.K = np.zeros((6, 2)) + 0.001
+
+    def F(self, dt):
+        return np.array(
+            [
+                [1, dt, dt * dt / 2, 0, 0, 0],
+                [0, 0, 0, 1, dt, dt * dt / 2],
+                [0, 1, dt, 0, 0, 0],
+                [0, 0, 0, 0, 1, dt],
+                [0, 0, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0, 1],
+            ]
+        )
+
+    def H(self):
+        return np.array([[1, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0]])
 
     def predict(self, dt):
-        return self.xy
+        self.xy = self.F(dt) @ self.xy
+        return np.array([[self.xy[0], self.xy[3]]])
 
-    def estimate(self, new_data, dt):
-        self.xy = self.xy * 0.1 + new_data * 0.9
-        return self.xy
+    def update(self, new_mean, new_covar, dt):
+        print(new_mean, self.xy, "apple")
+        self.xy = self.xy + self.K @ (new_mean - self.H() @ self.xy)
+        self.covar = self.covar - self.K @ self.H() @ self.covar
+        self.K = (
+            self.covar
+            @ self.H().T
+            @ np.linalg.inv(self.H() @ self.covar @ self.H().T + new_covar)
+        )
+        return np.array([[self.xy[0], self.xy[3]]])
 
 
 if __name__ == "__main__":
@@ -144,20 +157,26 @@ if __name__ == "__main__":
     sim = TwoDRandomWalkSimulation((1280, 720))
     sim.start_game_thread()
     sim_is_alive = True
+    dt = 0.3
     while sim_is_alive:
 
-        observation = sim.observe()
-        estimate = kf.estimate(observation, 0.3)
-
-        sim.add_estimate(estimate)
-        prediction = kf.predict(1)
+        prediction = kf.predict(dt)
         sim.add_prediction(prediction)
 
-        print(observation)
-        print(estimate)
-        print(prediction)
+        observation = sim.observe()
+        new_mean = np.zeros((2))
+        new_mean[0] = observation[0][0]
+        new_mean[1] = observation[0][1]
+        new_covar = np.eye(2) * 100
+        update = kf.update(new_mean, new_covar, dt)
+        sim.add_update(update)
+        # print(kf.covar)
+
+        # print(observation)
+        # print(update)
+        # print(prediction)
         print("*" * 20)
-        time.sleep(0.3)
+        time.sleep(dt)
 
         sim_is_alive = sim.to_loop
     # main()
