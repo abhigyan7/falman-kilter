@@ -99,7 +99,7 @@ class TwoDRandomWalkSimulation(object):
 
     def observe(self):
         mean = np.array([self.xs[-1], self.ys[-1]]).reshape((-1, 2))
-        ret = np.random.normal(mean, [20, 20]).reshape((-1, 2))
+        ret = np.random.normal(mean, [16, 16]).reshape((-1, 2))
         self.sensor_xs.append(ret[0][0])
         self.sensor_ys.append(ret[0][1])
         return ret
@@ -115,10 +115,48 @@ class TwoDRandomWalkSimulation(object):
         return
 
 
+class TwoDFirstOrderKalmanFilter(object):
+    def __init__(self):
+        self.xy = np.zeros((4)) + np.array([300, 0.1, 300, 0.1])
+        self.covar = np.diag([10000, 100, 10000, 100])
+        self.K = np.zeros((4, 2)) + 0.2
+        self.Q = np.diag([2, 4, 2, 4]) * 0.1
+
+    def F(self, dt):
+        return np.array(
+            [
+                [1, dt, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, dt],
+                [0, 0, 0, 1],
+            ]
+        )
+
+    def H(self):
+        return np.array([[1, 0, 0, 0], [0, 0, 1, 0]])
+
+    def predict(self, dt):
+        self.xy = self.F(dt) @ self.xy
+        self.covar = (self.F(dt) @ self.covar @ self.F(dt).T) + self.Q
+        print("covar after predict", self.covar)
+        return np.array([[self.xy[0], self.xy[2]]])
+
+    def update(self, new_mean, new_covar, dt):
+        self.K = (
+            self.covar
+            @ self.H().T
+            @ np.linalg.inv(self.H() @ self.covar @ self.H().T + new_covar)
+        )
+        self.xy = self.xy + self.K @ (new_mean - self.H() @ self.xy)
+        self.covar = self.covar - (self.K @ self.H() @ self.covar)
+        print("covar after update", self.covar)
+        return np.array([[self.xy[0], self.xy[2]]])
+
+
 class TwoDSecondOrderKalmanFilter(object):
     def __init__(self):
         self.xy = np.zeros((6)) + 0.000001
-        self.covar = np.eye(6) * 100
+        self.covar = np.eye(6) * 100000
         self.K = np.zeros((6, 2)) + 0.001
 
     def F(self, dt):
@@ -153,21 +191,25 @@ class TwoDSecondOrderKalmanFilter(object):
 
 
 if __name__ == "__main__":
-    kf = TwoDSecondOrderKalmanFilter()
+    kf = TwoDFirstOrderKalmanFilter()
     sim = TwoDRandomWalkSimulation((1280, 720))
     sim.start_game_thread()
     sim_is_alive = True
+    n_steps = 0
     dt = 0.3
     while sim_is_alive:
+        n_steps += 1
+        if n_steps > 1000:
+            break
 
         prediction = kf.predict(dt)
-        sim.add_prediction(prediction)
+        # sim.add_prediction(prediction)
 
         observation = sim.observe()
         new_mean = np.zeros((2))
         new_mean[0] = observation[0][0]
         new_mean[1] = observation[0][1]
-        new_covar = np.eye(2) * 100
+        new_covar = np.eye(2) * 16
         update = kf.update(new_mean, new_covar, dt)
         sim.add_update(update)
         # print(kf.covar)
@@ -175,7 +217,7 @@ if __name__ == "__main__":
         # print(observation)
         # print(update)
         # print(prediction)
-        print("*" * 20)
+        # print("*" * 20)
         time.sleep(dt)
 
         sim_is_alive = sim.to_loop
